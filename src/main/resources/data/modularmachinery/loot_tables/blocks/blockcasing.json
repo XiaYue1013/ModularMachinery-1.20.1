@@ -1,0 +1,65 @@
+{
+  "type": "minecraft:block",
+  "pools": [
+    {
+      "bonus_rolls": 0.0,
+      "conditions": [
+        { "condition": "minecraft:survives_explosion" },
+        { "condition": "minecraft:block_state_property",
+          "block": "modularmachinery:blockcasing", "properties": { "casing": "plain" } }
+      ],
+      "entries": [ { "type": "minecraft:item", "name": "modularmachinery:blockcasing_plain" } ],
+      "rolls": 1.0
+    },
+    {
+      "bonus_rolls": 0.0,
+      "conditions": [
+        { "condition": "minecraft:survives_explosion" },
+        { "condition": "minecraft:block_state_property",
+          "block": "modularmachinery:blockcasing", "properties": { "casing": "vent" } }
+      ],
+      "entries": [ { "type": "minecraft:item", "name": "modularmachinery:blockcasing_vent" } ],
+      "rolls": 1.0
+    },
+    {
+      "bonus_rolls": 0.0,
+      "conditions": [
+        { "condition": "minecraft:survives_explosion" },
+        { "condition": "minecraft:block_state_property",
+          "block": "modularmachinery:blockcasing", "properties": { "casing": "firebox" } }
+      ],
+      "entries": [ { "type": "minecraft:item", "name": "modularmachinery:blockcasing_firebox" } ],
+      "rolls": 1.0
+    },
+    {
+      "bonus_rolls": 0.0,
+      "conditions": [
+        { "condition": "minecraft:survives_explosion" },
+        { "condition": "minecraft:block_state_property",
+          "block": "modularmachinery:blockcasing", "properties": { "casing": "gearbox" } }
+      ],
+      "entries": [ { "type": "minecraft:item", "name": "modularmachinery:blockcasing_gearbox" } ],
+      "rolls": 1.0
+    },
+    {
+      "bonus_rolls": 0.0,
+      "conditions": [
+        { "condition": "minecraft:survives_explosion" },
+        { "condition": "minecraft:block_state_property",
+          "block": "modularmachinery:blockcasing", "properties": { "casing": "reinforced" } }
+      ],
+      "entries": [ { "type": "minecraft:item", "name": "modularmachinery:blockcasing_reinforced" } ],
+      "rolls": 1.0
+    },
+    {
+      "bonus_rolls": 0.0,
+      "conditions": [
+        { "condition": "minecraft:survives_explosion" },
+        { "condition": "minecraft:block_state_property",
+          "block": "modularmachinery:blockcasing", "properties": { "casing": "circuitry" } }
+      ],
+      "entries": [ { "type": "minecraft:item", "name": "modularmachinery:blockcasing_circuitry" } ],
+      "rolls": 1.0
+    }
+  ]
+}

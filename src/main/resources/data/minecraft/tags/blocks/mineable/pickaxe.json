@@ -1,0 +1,85 @@
+{
+  "replace": false,
+  "values": [
+    {
+      "id": "modularmachinery:machine_controller",
+      "required": false
+    },
+    {
+      "id": "modularmachinery:factory_controller",
+      "required": false
+    },
+    {
+      "id": "modularmachinery:blockcasing",
+      "required": false
+    },
+    {
+      "id": "modularmachinery:item_input_hatch",
+      "required": false
+    },
+    {
+      "id": "modularmachinery:item_output_hatch",
+      "required": false
+    },
+    {
+      "id": "modularmachinery:fluid_input_hatch",
+      "required": false
+    },
+    {
+      "id": "modularmachinery:fluid_output_hatch",
+      "required": false
+    },
+    {
+      "id": "modularmachinery:energy_input_hatch",
+      "required": false
+    },
+    {
+      "id": "modularmachinery:energy_output_hatch",
+      "required": false
+    },
+    {
+      "id": "modularmachinery:parallel_controller",
+      "required": false
+    },
+    {
+      "id": "modularmachinery:upgrade_bus",
+      "required": false
+    },
+    {
+      "id": "modularmachinery:example_machine_controller",
+      "required": false
+    },
+    {
+      "id": "modularmachinery:example_factory_controller",
+      "required": false
+    },
+    {
+      "id": "modularcontroller:alloy_furnace_controller",
+      "required": false
+    },
+    {
+      "id": "modularcontroller:iron_centrifuge_controller",
+      "required": false
+    },
+    {
+      "id": "modularcontroller:transformer_controller",
+      "required": false
+    },
+    {
+      "id": "modularcontroller:example_factory_controller",
+      "required": false
+    },
+    {
+      "id": "modularcontroller:example_machine_controller",
+      "required": false
+    },
+    {
+      "id": "modularcontroller:immortal_bloom_assembler_controller",
+      "required": false
+    },
+    {
+      "id": "modularcontroller:machine_1_controller",
+      "required": false
+    }
+  ]
+}

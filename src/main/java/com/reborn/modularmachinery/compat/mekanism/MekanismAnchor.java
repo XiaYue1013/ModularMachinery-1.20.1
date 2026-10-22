@@ -1,0 +1,427 @@
+package com.reborn.modularmachinery.compat.mekanism;
+
+import com.reborn.modularmachinery.block.MachineHatchBlockEntity;
+import com.reborn.modularmachinery.compat.BlockEntityPortMapper;
+import mekanism.api.MekanismAPI;
+import mekanism.api.chemical.gas.Gas;
+import mekanism.api.chemical.gas.GasStack;
+import mekanism.api.chemical.gas.IGasHandler;
+import net.minecraftforge.common.capabilities.Capability;
+import net.minecraftforge.common.util.LazyOptional;
+import net.minecraftforge.fluids.capability.templates.FluidTank;
+
+import javax.annotation.Nullable;
+import java.util.Collections;
+import java.util.Map;
+import java.util.WeakHashMap;
+
+/**
+ * 把 Mekanism 的化学能力接到本模组的流体仓上——**唯一一个碰 Mekanism 的 Forge 能力的类**。
+ *
+ * <p>它存在的全部理由是**类加载隔离**：{@link HybridGasTank} 与 {@link IGasHandler} 都要求 Mekanism 在场，
+ * 而本模组的方块实体每个世界都会被加载、**包括没装 Mekanism 的进程**。所以主模组里一行 Mekanism 都不得出现；
+ * 它只认识 {@code ModCompat.mapPort} 这个通用入口，而本类由 {@link MekanismModule} 在
+ * {@code FMLCommonSetupEvent} 里挂上去——那个时机只在装了 Mekanism 时才到达。
+ *
+ * <p>静态字段 {@link #CHEMICAL_HANDLER} 是「Mekanism 的化学能力对象」。它必须由
+ * {@code RegisterCapabilitiesEvent} 里调 {@code IGasHandler.getCapability()} 来取：Forge 的能力对象
+ * 只有在**注册之后**才拿得到，而在此之前 {@code getCapability()} 会抛异常。这也是
+ * {@link MekanismModule#registerCapabilities} 存在的原因。
+ */
+final class MekanismAnchor {
+
+    /**
+     * 每个流体仓一个气体罐，**按方块实体身份**索引。
+     *
+     * <p>用 {@link WeakHashMap} 而不是让方块实体自己持有一个字段：方块实体在主模组里，加一个
+     * 「气体罐」字段就意味着它的类型里出现 Mekanism 的类——那正是本类要避免的。
+     * 弱键保证区块卸载后条目会被回收，不需要自己管生命周期。
+     *
+     * <p>并发：方块实体的能力查询可能来自任意线程（区块加载、管道、客户端同步），
+     * 所以用同步包装的 map。
+     */
+    private static final Map<MachineHatchBlockEntity, HybridGasTank> TANKS =
+            Collections.synchronizedMap(new WeakHashMap<>());
+
+    /**
+     * 端口收集时用的家族名。主模组只认识这个字符串，不认识它背后的 {@link IGasHandler}（勘测 X4）。
+     */
+    static final String GAS_FAMILY = "gas";
+
+    private MekanismAnchor() {
+    }
+
+    /** 挂到主模组上的那个映射器。 */
+    static BlockEntityPortMapper portMapper() {
+        return new Mapper();
+    }
+
+    /**
+     * 取这个实体上的气体罐，需要时新建；不是流体仓则返回 {@code null}。
+     *
+     * <p>「只有在流体仓上才有气体」是**旧版的形状**（{@code HybridGasTank} 的宿主是
+     * {@code TileFluidTank}），也是本条目的语义：一个罐子要么装流体要么装气体，所以气体那一半与流体那一半
+     * 必须住在同一个方块上。
+     */
+    @Nullable
+    static HybridGasTank tankOf(Object entity) {
+        if (!(entity instanceof MachineHatchBlockEntity hatch)) {
+            return null;
+        }
+        FluidTank fluid = hatch.fluidTank();
+        if (fluid == null) {
+            return null;
+        }
+        synchronized (TANKS) {
+            return TANKS.computeIfAbsent(hatch, key -> new HybridGasTank(key, fluid, key::markStorageChanged));
+        }
+    }
+
+    /** 存档用：把某个仓的气体那一半写进 NBT；没有气体那一半的仓不写。 */
+    static void saveGasTo(MachineHatchBlockEntity hatch, net.minecraft.nbt.CompoundTag tag) {
+        HybridGasTank tank;
+        synchronized (TANKS) {
+            tank = TANKS.get(hatch);
+        }
+        // 只有**已经建过**的罐才写盘。没有条目意味着这个仓这一生没被问过气体能力，
+        // 那它就不可能有气体内容——不去 computeIfAbsent，免得单纯存盘就给每个流体仓造一个对象。
+        if (tank != null) {
+            tank.writeToNbt(tag);
+        }
+    }
+
+    /** 读盘用：把 NBT 里的气体那一半读回某个仓；没有气体那一半的仓忽略。 */
+    static void loadGasFrom(MachineHatchBlockEntity hatch, net.minecraft.nbt.CompoundTag tag) {
+        HybridGasTank tank = tankOf(hatch);
+        if (tank != null) {
+            tank.readFromNbt(tag);
+        }
+    }
+
+    /**
+     * 这个实体上**属于本模块**的端口处理器与能力应答。
+     *
+     * <p><b>Mekanism 的能力对象是懒取的</b>（{@code Capabilities.GAS_HANDLER} 在比较时才读），不做缓存。
+     * 理由：那个静态字段由 Mekanism 自己的 {@code Capabilities.<clinit>} 建立，而本模组的
+     * {@code ports()} 跑在 {@code FMLCommonSetupEvent} 里——**能力对象那时是否已经建立，取决于模组加载顺序**，
+     * 而 mods.toml 的 {@code ordering="AFTER"} 只保证 Mekanism 的**构造**在前，不保证它的静态初始化已经跑到那一步。
+     * 缓存一个当时还可能是 {@code null} 的值，症状是**气体端口永远不工作**，而日志里什么异常都没有。
+     * 而比较发生的能力查询是在玩家进世界之后，那时一切早就绪了。
+     */
+    private static final class Mapper implements BlockEntityPortMapper {
+
+        @Override
+        @Nullable
+        public LazyOptional<?> map(Capability<?> capability, Object entity) {
+            Capability<IGasHandler> chemical = MekanismCapabilities.gasHandler();
+            if (chemical == null) {
+                MekanismProbe.map("no Mekanism capability object (Capabilities.GAS_HANDLER is null)", entity);
+                return null;
+            }
+            if (capability != chemical) {
+                MekanismProbe.map("not mine", entity);
+                return null;
+            }
+            HybridGasTank tank = tankOf(entity);
+            if (tank == null) {
+                MekanismProbe.map("mine, but this entity has no gas side", entity);
+                // 「是我的能力，但这个实体没有」——与 Forge 的语义一致，也让后面的映射器不必再被问一遍。
+                return LazyOptional.empty();
+            }
+            MekanismProbe.map("mine -> gas handler", entity);
+            return LazyOptional.of(tank::handler);
+        }
+
+        /**
+         * 端口收集用：这个实体上有一个气体端口（如果它是流体仓）。
+         *
+         * <p>返回的是 {@code tankOf} 里那**一个**对象，与 {@link #map} 给 Forge 的是同一个——
+         * 配方读到的那份状态与管道灌进去的那份必须是同一份，这是 {@code tankOf} 用身份 map 的原因。
+         */
+        @Override
+        public java.util.List<?> handlers(Object entity, @Nullable String family) {
+            if (family != null && !GAS_FAMILY.equals(family)) {
+                return java.util.List.of();
+            }
+            HybridGasTank tank = tankOf(entity);
+            MekanismProbe.handlers(entity, tank == null ? 0 : 1);
+            return tank == null ? java.util.List.of() : java.util.List.of(tank.handler());
+        }
+
+        @Override
+        public void save(net.minecraft.nbt.CompoundTag tag, Object entity) {
+            if (entity instanceof MachineHatchBlockEntity hatch) {
+                saveGasTo(hatch, tag);
+            }
+        }
+
+        @Override
+        public void load(net.minecraft.nbt.CompoundTag tag, Object entity) {
+            if (entity instanceof MachineHatchBlockEntity hatch) {
+                loadGasFrom(hatch, tag);
+            }
+        }
+
+        /** 见 {@link MekanismAnchor#namedValues}：主模组按名字取数，不认识气体是什么。 */
+        @Override
+        public java.util.Map<String, String> namedValues(Object entity) {
+            java.util.Map<String, String> values = MekanismAnchor.namedValues(entity);
+            return values == null ? java.util.Map.of() : values;
+        }
+
+        /**
+         * 诊断用：把「哪个能力对象是气体」这件事说清楚。
+         *
+         * <p>键是能力对象的字符串形式（与 {@code ModCompat.recordCapability} 记下的键**同源**，
+         * 都是 {@code String.valueOf(capability)}），值是它的可读名字。于是那份「其它模组问过的能力」
+         * 清单里每一行都能读出它到底是不是气体能力。
+         */
+        @Override
+        public java.util.Map<String, String> capabilityNames() {
+            try {
+                Capability<IGasHandler> chemical = MekanismCapabilities.gasHandler();
+                if (chemical == null) {
+                    return java.util.Map.of();
+                }
+                return java.util.Map.of(String.valueOf(chemical),
+                        "GAS_HANDLER / mekanism:" + mekanism.api.chemical.ChemicalType.GAS.getSerializedName()
+                                + "（这就是气体端口认领的能力）");
+            } catch (Throwable unavailable) {
+                return java.util.Map.of();
+            }
+        }
+    }
+
+    /** 气体能力这一半是否可用（给诊断用）。 */
+    static boolean gasHandlerAvailable() {
+        return MekanismCapabilities.gasHandler() != null;
+    }
+
+    /**
+     * 给诊断用：一个 Forge 能力对象**属于哪一种化学**，或 {@code null} 表示不是 Mekanism 的。
+     *
+     * <p>为什么需要它：{@code Capability#toString()} 只给出对象身份（`Capability@25f549c`），
+     * 于是「管道问的到底是不是气体能力」在诊断里读不出来——而那是这条路上最关键的一个分岔。
+     * 判据直接用 Mekanism 自己的四个能力字段做**身份比较**（Forge 的能力是按类型的身份对象），
+     * 所以这里不会猜错。名字用 API 自己给的（{@code ChemicalType.getSerializedName()}、
+     * 注册表键），不自己编。
+     */
+    @Nullable
+    static String capabilityName(Object capability) {
+        if (!(capability instanceof Capability<?> cap)) {
+            return null;
+        }
+        try {
+            if (cap == MekanismCapabilities.gasHandler()) {
+                return "GAS_HANDLER（" + chemicalTypeName("GAS") + "）";
+            }
+            Class<?> commonCaps = Class.forName("mekanism.common.capabilities.Capabilities");
+            if (cap == commonCaps.getField("INFUSION_HANDLER").get(null)) {
+                return "INFUSION_HANDLER（" + chemicalTypeName("INFUSION") + "）";
+            }
+            if (cap == commonCaps.getField("PIGMENT_HANDLER").get(null)) {
+                return "PIGMENT_HANDLER（" + chemicalTypeName("PIGMENT") + "）";
+            }
+            if (cap == commonCaps.getField("SLURRY_HANDLER").get(null)) {
+                return "SLURRY_HANDLER（" + chemicalTypeName("SLURRY") + "）";
+            }
+        } catch (Throwable unavailable) {
+            return null;
+        }
+        return null;
+    }
+
+    /** {@code GAS} 之类在 Mekanism 注册表里的实际名字（例如 {@code mekanism:gas}）。 */
+    private static String chemicalTypeName(String constant) {
+        try {
+            return mekanism.api.chemical.ChemicalType.valueOf(constant).getSerializedName();
+        } catch (Throwable unavailable) {
+            return constant;
+        }
+    }
+
+    /**
+     * 一个仓**已经存在的**气体罐的内容描述；没有罐（或不是流体仓）时返回 {@code null}。
+     *
+     * <p>刻意**不新建**罐：诊断不该有副作用，而且「有没有罐」本身就是证据——
+     * 一个流体仓从来没有过气体罐，说明这条路上从来没被走到（管道没问、端口收集也没发生）。
+     */
+    @Nullable
+    static String describeExistingTank(Object entity) {
+        if (!(entity instanceof MachineHatchBlockEntity hatch)) {
+            return null;
+        }
+        HybridGasTank tank;
+        synchronized (TANKS) {
+            tank = TANKS.get(hatch);
+        }
+        if (tank == null) {
+            return null;
+        }
+        return tank.describeContents();
+    }
+
+    /** 这个仓上的气体插入尝试统计；没有气体那一半时返回 {@code null}。见 {@code InsertTally}。 */
+    @Nullable
+    static String describeTankInserts(Object entity) {
+        if (!(entity instanceof MachineHatchBlockEntity hatch)) {
+            return null;
+        }
+        HybridGasTank tank;
+        synchronized (TANKS) {
+            tank = TANKS.get(hatch);
+        }
+        return tank == null ? null : tank.describeInserts();
+    }
+
+    /**
+     * 主模组的界面要的两个数字，用**名字**报出去：{@code gas.amount} 与 {@code gas.capacity}。
+     *
+     * <p>名字里不含模块名，因为它们描述的是「气体」这件东西，而不是 Mekanism——换一个提供气体的模组，
+     * 主模组那两个数据槽与那条容量条**一个字都不用改**。
+     */
+    @Nullable
+    static java.util.Map<String, String> namedValues(Object entity) {
+        String[] gas = menuGas(entity);
+        if (gas == null) {
+            return null;
+        }
+        return java.util.Map.of("gas.amount", gas[0], "gas.capacity", gas[1]);
+    }
+
+    /**
+     * 界面 tooltip 要的两个字段：气体的内容与容量。
+     *
+     * <p><b>它读的是方块实体里同步过来的 NBT（{@code gas} 标签），不是内存里的气体罐。</b>
+     * 这一条是所有者实测逼出来的：气体确实在仓里（Jade 显示 `mekanism:brine`、界面 tooltip 也读到了
+     * 内存里的罐），但**内存里的罐只在「这条路上被走到过」时才存在**——客户端可能从来
+     * 没发生过一次能力查询（查询来自管道与机器，而它们在服务端），于是内存里根本没有那个条目。
+     * 存档 NBT 则是**方块实体同步时一定会带过来的**（{@code getUpdateTag} → {@code saveWithoutMetadata}
+     * → 本模块的 {@code save} 写了 {@code gas}），所以读它才是稳的。
+     *
+     * <p>返回 {@code {注册名, 气体量, 容量}}，三个字段都是**原始**字符串：界面自己拼出「内容名 + 量/容量」
+     * 那一行，与流体仓的 tooltip 同一形态（所有者 2026-10-20 的实测截图：气体仓原先多出一行
+     * 「气体：」前缀、还把流体那一侧写成「空（气体占着这个仓）」，同一件事说了两遍）。
+     * 读不到气体标签时返回 {@code null}（那一行就不显示）。
+     */
+    @Nullable
+    static String[] gasTooltip(Object entity) {
+        if (!(entity instanceof MachineHatchBlockEntity hatch) || !(entity instanceof net.minecraft.world.level.block.entity.BlockEntity be)) {
+            return null;
+        }
+        net.minecraft.nbt.CompoundTag tag = be.saveWithoutMetadata();
+        if (!tag.contains(HybridGasTank.TAG_GAS)) {
+            return null;
+        }
+        net.minecraft.nbt.CompoundTag gas = tag.getCompound(HybridGasTank.TAG_GAS);
+        long amount = gas.getLong("amount");
+        String id = gas.getString("id");
+        if (amount <= 0L || id.isEmpty()) {
+            return null;
+        }
+        // 容量从**这个仓自己的等级**算：流体仓的容量由等级决定，而气体与流体共用同一个罐。
+        long capacity = 0L;
+        net.minecraftforge.fluids.capability.templates.FluidTank fluid = hatch.fluidTank();
+        if (fluid != null) {
+            capacity = Math.max(1L, fluid.getCapacity());
+        }
+        return new String[] {id, Long.toString(amount), Long.toString(capacity)};
+    }
+
+    /**
+     * 菜单数据槽要的两个数字：{@code {气体量, 容量}}；没有气体那一半时返回 {@code null}。
+     *
+     * <p>与 {@link #gasTooltip} 分开：那个给 tooltip 的是**同步过来的 NBT 读数**（三个原始字段），
+     * 这个给容量条的是**内存里的罐**（菜单的数据槽只传 int）。两者来源不同是有意的：
+     * 容量条由服务端每 tick 推给客户端，读服务端那一份是准的；tooltip 则可能在客户端从没发生过
+     * 能力查询时也要能显示（见 {@link #gasTooltip} 的注释）。
+     */
+    @Nullable
+    static String[] menuGas(Object entity) {
+        if (!(entity instanceof MachineHatchBlockEntity hatch)) {
+            return null;
+        }
+        HybridGasTank tank;
+        synchronized (TANKS) {
+            tank = TANKS.get(hatch);
+        }
+        if (tank == null) {
+            return null;
+        }
+        return new String[] {Long.toString(tank.amountForMenu()), Long.toString(tank.capacity())};
+    }
+
+    /** 某种气体的颜色（按注册名查），给容量条上色用；查不到时中性灰。 */
+    static int gasTint(String registryName) {
+        try {
+            net.minecraft.resources.ResourceLocation id = net.minecraft.resources.ResourceLocation
+                    .tryParse(registryName);
+            if (id == null) {
+                return 0x9E9E9E;
+            }
+            Gas gas = lookupByRegistryName(id);
+            return gas == null ? 0x9E9E9E : new mekanism.api.chemical.gas.GasStack(gas, 1L).getChemicalTint();
+        } catch (Throwable unavailable) {
+            return 0x9E9E9E;
+        }
+    }
+
+    /**
+     * 气体的**本地化名字**（如「氢氟酸」），给界面 tooltip 的第一行。
+     *
+     * <p>走 {@link Gas#getTextComponent()} 而不是自己拼翻译键：Mekanism 把气体名放在自己的语言文件里
+     * （键形如 {@code gas.<modid>.<path>}），并且已经处理了「查不到这个名字」时的回退。
+     * 查不到这种气体时返回 {@code null}，界面回退到注册名。
+     */
+    @Nullable
+    static net.minecraft.network.chat.Component gasDisplayName(String registryName) {
+        try {
+            net.minecraft.resources.ResourceLocation id = net.minecraft.resources.ResourceLocation
+                    .tryParse(registryName);
+            if (id == null) {
+                return null;
+            }
+            Gas gas = lookupByRegistryName(id);
+            return gas == null ? null : gas.getTextComponent();
+        } catch (Throwable unavailable) {
+            return null;
+        }
+    }
+
+    @Nullable
+    private static Gas lookupByRegistryName(net.minecraft.resources.ResourceLocation id) {
+        try {
+            var registry = MekanismAPI.gasRegistry();
+            if (registry == null) {
+                return null;
+            }
+            Gas gas = registry.getValue(id);
+            return gas == MekanismAPI.EMPTY_GAS ? null : gas;
+        } catch (Throwable unavailable) {
+            return null;
+        }
+    }
+
+    /**
+     * Mekanism 的能力对象，**隔离在这一个方法里**，原因见 {@link Mapper} 的注释。
+     *
+     * <p>{@code mekanism.common.capabilities.Capabilities} 而不是自己注册一个 {@code Capability}：
+     * Forge 的能力是**按类型**的身份对象，两边必须用同一个，否则 Mekanism 的管道问的是它的那个、
+     * 本模组答的是另一个，永远匹配不上。Mekanism 自己已经用
+     * {@code @AutoRegisterCapability} 声明了 {@code IGasHandler}，所以这里只读不注册。
+     */
+    private static final class MekanismCapabilities {
+        @SuppressWarnings("unchecked")
+        @Nullable
+        static Capability<IGasHandler> gasHandler() {
+            try {
+                Class<?> commonCaps = Class.forName("mekanism.common.capabilities.Capabilities");
+                return (Capability<IGasHandler>) commonCaps.getField("GAS_HANDLER").get(null);
+            } catch (Throwable unavailable) {
+                // 没有 Mekanism 时这个类根本不该被加载；真到了这里说明有人在没装它的情况下问起了气体，
+                // 那就诚实地答「没有这个能力」，而不是让一個 NoClassDefFoundError 逃进能力查询路径。
+                return null;
+            }
+        }
+    }
+}

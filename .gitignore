@@ -1,0 +1,15 @@
+.gradle/
+build/
+run/
+run-server/
+logs/
+*.log
+.idea/
+*.iml
+.vscode/
+!gradle/wrapper/gradle-wrapper.jar
+DEPENDENCY_MATRIX.md
+PORTING_CHECKLIST.md
+PORT_COMPARISON.md
+
+/LICENSE_NOTICES.md

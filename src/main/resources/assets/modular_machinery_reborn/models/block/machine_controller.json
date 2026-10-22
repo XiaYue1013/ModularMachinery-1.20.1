@@ -1,0 +1,13 @@
+{
+  "parent":"block/block",
+  "textures":{
+    "particle":"modular_machinery_reborn:block/legacy_controller_side",
+    "down":"modular_machinery_reborn:block/legacy_controller_side",
+    "up":"modular_machinery_reborn:block/legacy_controller_top",
+    "north":"modular_machinery_reborn:block/legacy_controller_front",
+    "south":"modular_machinery_reborn:block/legacy_controller_side",
+    "west":"modular_machinery_reborn:block/legacy_controller_side",
+    "east":"modular_machinery_reborn:block/legacy_controller_side"
+  },
+  "elements":[{"from":[0,0,0],"to":[16,16,16],"faces":{"down":{"texture":"#down","cullface":"down","tintindex":1},"up":{"texture":"#up","cullface":"up","tintindex":1},"north":{"texture":"#north","cullface":"north","tintindex":1},"south":{"texture":"#south","cullface":"south","tintindex":1},"west":{"texture":"#west","cullface":"west","tintindex":1},"east":{"texture":"#east","cullface":"east","tintindex":1}}}]
+}
